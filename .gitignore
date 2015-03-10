@@ -36,8 +36,9 @@ Thumbs.db
 # build related files #
 #######################
 /build/
-/Util/UUID.cpp
-/Util/GitDescription.cpp
+/Util/finger_print.cpp
+/Util/git_sha.cpp
+/cmake/postinst
 
 # Eclipse related files #
 #########################
@@ -77,7 +78,10 @@ stxxl.errlog
 /osrm-routed
 /osrm-datastore
 /osrm-prepare
+/osrm-unlock-all
 /osrm-cli
+/osrm-check-hsgr
+/osrm-springclean
 /nohup.out
 
 # Sandbox folder #

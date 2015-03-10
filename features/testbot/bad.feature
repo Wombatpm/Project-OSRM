@@ -1,4 +1,4 @@
-@routing @bad
+@routing @bad @testbot
 Feature: Handle bad data in a graceful manner
 
     Background:
@@ -11,8 +11,8 @@ Feature: Handle bad data in a graceful manner
         Given the ways
             | nodes |
 
-        When I preprocess data
-        Then "osrm-extract" should return code 255
+        When the data has been prepared
+        Then "osrm-extract" should return code 1
 
     Scenario: Only dead-end oneways
         Given the node map
@@ -45,8 +45,8 @@ Feature: Handle bad data in a graceful manner
 
     @poles
     Scenario: Routing close to the north/south pole
-    Mercator is undefined close to the poles.
-    All nodes and request with latitude to close to either of the poles should therefore be ignored.
+    # Mercator is undefined close to the poles.
+    # All nodes and request with latitude to close to either of the poles should therefore be ignored.
 
         Given the node locations
             | node | lat | lon |

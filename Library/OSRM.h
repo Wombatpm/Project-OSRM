@@ -28,53 +28,27 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef OSRM_H
 #define OSRM_H
 
-#include "OSRM.h"
+#include <osrm/ServerPaths.h>
 
-#include "../Plugins/BasePlugin.h"
-#include "../Plugins/HelloWorldPlugin.h"
-#include "../Plugins/LocatePlugin.h"
-#include "../Plugins/NearestPlugin.h"
-#include "../Plugins/TimestampPlugin.h"
-#include "../Plugins/ViaRoutePlugin.h"
-#include "../Server/DataStructures/BaseDataFacade.h"
-#include "../Server/DataStructures/InternalDataFacade.h"
-#include "../Server/DataStructures/SharedBarriers.h"
-#include "../Server/DataStructures/SharedDataFacade.h"
-#include "../Server/DataStructures/RouteParameters.h"
-#include "../Util/InputFileUtil.h"
-#include "../Util/OSRMException.h"
-#include "../Util/SimpleLogger.h"
+#include <memory>
 
-#include <boost/assert.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
-#include <boost/interprocess/shared_memory_object.hpp>
-#include <boost/interprocess/mapped_region.hpp>
-#include <boost/interprocess/sync/scoped_lock.hpp>
-#include <boost/noncopyable.hpp>
-#include <boost/shared_ptr.hpp>
-#include <boost/thread.hpp>
+class OSRM_impl;
+struct RouteParameters;
 
-#include <vector>
+namespace http
+{
+class Reply;
+}
 
-class OSRM : boost::noncopyable {
-private:
-    typedef boost::unordered_map<std::string, BasePlugin *> PluginMap;
-public:
-    OSRM(
-        const ServerPaths & paths,
-        const bool use_shared_memory = false
-    );
+class OSRM
+{
+  private:
+    std::unique_ptr<OSRM_impl> OSRM_pimpl_;
+
+  public:
+    explicit OSRM(ServerPaths paths, const bool use_shared_memory = false);
     ~OSRM();
-    void RunQuery(RouteParameters & route_parameters, http::Reply & reply);
-
-private:
-    void RegisterPlugin(BasePlugin * plugin);
-    PluginMap plugin_map;
-    bool use_shared_memory;
-    SharedBarriers barrier;
-    //base class pointer to the objects
-    BaseDataFacade<QueryEdge::EdgeData> * query_data_facade;
+    void RunQuery(RouteParameters &route_parameters, http::Reply &reply);
 };
 
-#endif //OSRM_H
+#endif // OSRM_H

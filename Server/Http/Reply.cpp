@@ -25,93 +25,98 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 */
 
-#include "Reply.h"
+#include <osrm/Reply.h>
 
-namespace http {
+#include "../../Util/cast.hpp"
 
-void Reply::setSize(const unsigned size) {
-    BOOST_FOREACH ( Header& h,  headers) {
-        if("Content-Length" == h.name) {
-            std::string sizeString;
-            intToString(size,h.value);
+namespace http
+{
+
+void Reply::SetSize(const unsigned size)
+{
+    for (Header &h : headers)
+    {
+        if ("Content-Length" == h.name)
+        {
+            h.value = cast::integral_to_string(size);
         }
     }
 }
 
-std::vector<boost::asio::const_buffer> Reply::toBuffers(){
+// Sets the size of the uncompressed output.
+void Reply::SetUncompressedSize() { SetSize(static_cast<unsigned>(content.size())); }
+
+std::vector<boost::asio::const_buffer> Reply::ToBuffers()
+{
     std::vector<boost::asio::const_buffer> buffers;
     buffers.push_back(ToBuffer(status));
-    BOOST_FOREACH(const Header & h, headers) {
+    for (const Header &h : headers)
+    {
         buffers.push_back(boost::asio::buffer(h.name));
         buffers.push_back(boost::asio::buffer(seperators));
         buffers.push_back(boost::asio::buffer(h.value));
         buffers.push_back(boost::asio::buffer(crlf));
     }
     buffers.push_back(boost::asio::buffer(crlf));
-    BOOST_FOREACH(const std::string & line, content) {
-        buffers.push_back(boost::asio::buffer(line));
-    }
+    buffers.push_back(boost::asio::buffer(content));
     return buffers;
 }
 
-std::vector<boost::asio::const_buffer> Reply::HeaderstoBuffers(){
+std::vector<boost::asio::const_buffer> Reply::HeaderstoBuffers()
+{
     std::vector<boost::asio::const_buffer> buffers;
     buffers.push_back(ToBuffer(status));
-    for (std::size_t i = 0; i < headers.size(); ++i) {
-        Header& h = headers[i];
-        buffers.push_back(boost::asio::buffer(h.name));
+    for (std::size_t i = 0; i < headers.size(); ++i)
+    {
+        Header &current_header = headers[i];
+        buffers.push_back(boost::asio::buffer(current_header.name));
         buffers.push_back(boost::asio::buffer(seperators));
-        buffers.push_back(boost::asio::buffer(h.value));
+        buffers.push_back(boost::asio::buffer(current_header.value));
         buffers.push_back(boost::asio::buffer(crlf));
     }
     buffers.push_back(boost::asio::buffer(crlf));
     return buffers;
 }
 
-Reply Reply::StockReply(Reply::status_type status) {
-    Reply rep;
-    rep.status = status;
-    rep.content.clear();
-    rep.content.push_back( ToString(status) );
-    rep.headers.resize(3);
-    rep.headers[0].name = "Access-Control-Allow-Origin";
-    rep.headers[0].value = "*";
-    rep.headers[1].name = "Content-Length";
+Reply Reply::StockReply(Reply::status_type status)
+{
+    Reply reply;
+    reply.status = status;
+    reply.content.clear();
 
-    std::string s;
-    intToString(rep.content.size(), s);
-
-    rep.headers[1].value = s;
-    rep.headers[2].name = "Content-Type";
-    rep.headers[2].value = "text/html";
-    return rep;
+    const std::string status_string = reply.ToString(status);
+    reply.content.insert(reply.content.end(), status_string.begin(), status_string.end());
+    reply.headers.emplace_back("Access-Control-Allow-Origin", "*");
+    reply.headers.emplace_back("Content-Length", cast::integral_to_string(reply.content.size()));
+    reply.headers.emplace_back("Content-Type", "text/html");
+    return reply;
 }
 
-std::string Reply::ToString(Reply::status_type status) {
-    switch (status) {
-    case Reply::ok:
+std::string Reply::ToString(Reply::status_type status)
+{
+    if (Reply::ok == status)
+    {
         return okHTML;
-    case Reply::badRequest:
+    }
+    if (Reply::badRequest == status)
+    {
         return badRequestHTML;
-    default:
-        return internalServerErrorHTML;
     }
+    return internalServerErrorHTML;
 }
 
-boost::asio::const_buffer Reply::ToBuffer(Reply::status_type status) {
-    switch (status) {
-    case Reply::ok:
+boost::asio::const_buffer Reply::ToBuffer(Reply::status_type status)
+{
+    if (Reply::ok == status)
+    {
         return boost::asio::buffer(okString);
-    case Reply::internalServerError:
-        return boost::asio::buffer(internalServerErrorString);
-    default:
-        return boost::asio::buffer(badRequestString);
     }
+    if (Reply::internalServerError == status)
+    {
+        return boost::asio::buffer(internalServerErrorString);
+    }
+    return boost::asio::buffer(badRequestString);
 }
 
-
-Reply::Reply() : status(ok) {
-
-}
-
+Reply::Reply() : status(ok) {}
 }

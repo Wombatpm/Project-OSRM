@@ -2,6 +2,10 @@ Given /^the profile "([^"]*)"$/ do |profile|
   set_profile profile
 end
 
+Given(/^the import format "(.*?)"$/) do |format|
+  set_input_format format
+end
+
 Given /^a grid size of (\d+) meters$/ do |meters|
   set_grid_size meters
 end
@@ -128,4 +132,45 @@ end
 Given /^the input file ([^"]*)$/ do |file|
   raise "*** Input file must in .osm format" unless File.extname(file)=='.osm'
   @osm_str = File.read file
+end
+
+Given /^the data has been saved to disk$/ do
+  begin
+    write_input_data
+  rescue OSRMError => e
+    @process_error = e
+  end
+end
+
+Given /^the data has been extracted$/ do
+  begin
+    write_input_data
+    extract_data unless extracted?
+  rescue OSRMError => e
+    @process_error = e
+  end
+end
+
+Given /^the data has been prepared$/ do
+  begin
+    reprocess
+  rescue OSRMError => e
+    @process_error = e
+  end
+end
+
+Given /^osrm\-routed is stopped$/ do
+  begin
+    OSRMLoader.shutdown
+  rescue OSRMError => e
+    @process_error = e
+  end
+end
+
+Given /^data is loaded directly/ do
+  @load_method = 'directly'
+end
+
+Given /^data is loaded with datastore$/ do
+  @load_method = 'datastore'
 end

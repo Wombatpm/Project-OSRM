@@ -1,7 +1,7 @@
 @routing @car @restrictions
 Feature: Car - Turn restrictions
-    Handle turn restrictions as defined by http://wiki.openstreetmap.org/wiki/Relation:restriction
-    Note that if u-turns are allowed, turn restrictions can lead to suprising, but correct, routes.
+# Handle turn restrictions as defined by http://wiki.openstreetmap.org/wiki/Relation:restriction
+# Note that if u-turns are allowed, turn restrictions can lead to suprising, but correct, routes.
 
     Background: Use car routing
         Given the profile "car"
@@ -29,6 +29,34 @@ Feature: Car - Turn restrictions
             | s    | w  |       |
             | s    | n  | sj,nj |
             | s    | e  | sj,ej |
+
+    @no_turning
+    Scenario: Car - No straight on
+        Given the node map
+            | a | b | j | d | e |
+            | v |   |   |   | z |
+            |   | w | x | y |   |
+
+        And the ways
+            | nodes | oneway |
+            | ab    | no     |
+            | bj    | no     |
+            | jd    | no     |
+            | de    | no     |
+            | av    | yes    |
+            | vw    | yes    |
+            | wx    | yes    |
+            | xy    | yes    |
+            | yz    | yes    |
+            | ze    | yes    |
+
+        And the relations
+            | type        | way:from | way:to | node:via | restriction    |
+            | restriction | bj       | jd     | j        | no_straight_on |
+
+        When I route I should get
+            | from | to | route             |
+            | a    | e  | av,vw,wx,xy,yz,ze |
 
     @no_turning
     Scenario: Car - No right turn
@@ -249,3 +277,107 @@ Feature: Car - Turn restrictions
             | from | to | route |
             | s    | a  | sj,aj |
             | s    | b  | sj,bj |
+
+    @except
+    Scenario: Car - Several only_ restrictions at the same segment
+        Given the node map
+            |   |   |   |   | y |   |   |   |   |
+            | i | j | f | b | x | a | e | g | h |
+            |   |   |   |   |   |   |   |   |   |
+            |   |   |   | c |   | d |   |   |   |
+
+        And the ways
+            | nodes | oneway |
+            | fb    | no     |
+            | bx    | -1     |
+            | xa    | no     |
+            | ae    | no     |
+            | cb    | no     |
+            | dc    | -1     |
+            | da    | no     |
+            | fj    | no     |
+            | jf    | no     |
+            | ge    | no     |
+            | hg    | no     |
+
+        And the relations
+            | type        | way:from | way:to | node:via | restriction      |
+            | restriction | ae       | xa     | a        | only_straight_on |
+            | restriction | xb       | fb     | b        | only_straight_on |
+            | restriction | cb       | bx     | b        | only_right_turn  |
+            | restriction | da       | ae     | a        | only_right_turn  |
+
+        When I route I should get
+            | from | to | route                            |
+            | e    | f  | ae,xa,bx,fb                      |
+            | c    | f  | dc,da,ae,ge,hg,hg,ge,ae,xa,bx,fb |
+            | d    | f  | da,ae,ge,hg,hg,ge,ae,xa,bx,fb    |
+
+    @except
+    Scenario: Car - two only_ restrictions share same to-way
+        Given the node map
+            |   |   | e |   |   |   | f |   |   |
+            |   |   |   |   | a |   |   |   |   |
+            |   |   |   |   |   |   |   |   |   |
+            |   |   | c |   | x |   | d |   |   |
+            |   |   |   |   | y |   |   |   |   |
+            |   |   |   |   |   |   |   |   |   |
+            |   |   |   |   | b |   |   |   |   |
+
+        And the ways
+            | nodes | oneway |
+            | ef    | no     |
+            | ce    | no     |
+            | fd    | no     |
+            | ca    | no     |
+            | ad    | no     |
+            | ax    | no     |
+            | xy    | no     |
+            | yb    | no     |
+            | cb    | no     |
+            | db    | no     |
+
+        And the relations
+            | type        | way:from | way:to | node:via | restriction      |
+            | restriction | ax       | xy     | x        | only_straight_on |
+            | restriction | by       | xy     | y        | only_straight_on |
+
+        When I route I should get
+            | from | to | route    |
+            | a    | b  | ax,xy,yb |
+            | b    | a  | yb,xy,ax |
+
+    @except
+    Scenario: Car - two only_ restrictions share same from-way
+        Given the node map
+            |   |   | e |   |   |   | f |   |   |
+            |   |   |   |   | a |   |   |   |   |
+            |   |   |   |   |   |   |   |   |   |
+            |   |   | c |   | x |   | d |   |   |
+            |   |   |   |   | y |   |   |   |   |
+            |   |   |   |   |   |   |   |   |   |
+            |   |   |   |   | b |   |   |   |   |
+
+        And the ways
+            | nodes | oneway |
+            | ef    | no     |
+            | ce    | no     |
+            | fd    | no     |
+            | ca    | no     |
+            | ad    | no     |
+            | ax    | no     |
+            | xy    | no     |
+            | yb    | no     |
+            | cb    | no     |
+            | db    | no     |
+
+        And the relations
+            | type        | way:from | way:to | node:via | restriction      |
+            | restriction | xy       | xa     | x        | only_straight_on |
+            | restriction | xy       | yb     | y        | only_straight_on |
+
+        When I route I should get
+            | from | to | route    |
+            | a    | b  | ax,xy,yb |
+            | b    | a  | yb,xy,ax |
+

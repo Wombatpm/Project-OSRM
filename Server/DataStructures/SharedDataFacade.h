@@ -1,6 +1,6 @@
 /*
 
-Copyright (c) 2013, Project OSRM, Dennis Luxen, others
+Copyright (c) 2014, Project OSRM, Dennis Luxen, others
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,
@@ -28,358 +28,404 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef SHARED_DATA_FACADE_H
 #define SHARED_DATA_FACADE_H
 
-//implements all data storage when shared memory is _NOT_ used
-
-#include <boost/make_shared.hpp>
-#include <boost/shared_ptr.hpp>
+// implements all data storage when shared memory _IS_ used
 
 #include "BaseDataFacade.h"
 #include "SharedDataType.h"
 
-#include "../../DataStructures/StaticGraph.h"
-#include "../../DataStructures/StaticRTree.h"
+#include "../../data_structures/range_table.hpp"
+#include "../../data_structures/static_graph.hpp"
+#include "../../data_structures/static_rtree.hpp"
 #include "../../Util/BoostFileSystemFix.h"
-#include "../../Util/ProgramOptions.h"
-#include "../../Util/SimpleLogger.h"
+#include "../../Util/make_unique.hpp"
+#include "../../Util/simple_logger.hpp"
 
 #include <algorithm>
+#include <memory>
 
-template<class EdgeDataT>
-class SharedDataFacade : public BaseDataFacade<EdgeDataT> {
+template <class EdgeDataT> class SharedDataFacade : public BaseDataFacade<EdgeDataT>
+{
 
-private:
+  private:
     typedef EdgeDataT EdgeData;
-    typedef BaseDataFacade<EdgeData>                        super;
-    typedef StaticGraph<EdgeData, true>                     QueryGraph;
-    typedef typename StaticGraph<EdgeData, true>::_StrNode  GraphNode;
-    typedef typename StaticGraph<EdgeData, true>::_StrEdge  GraphEdge;
-    typedef typename QueryGraph::InputEdge                  InputEdge;
-    typedef typename super::RTreeLeaf                       RTreeLeaf;
-    typedef typename StaticRTree<RTreeLeaf, true>::TreeNode RTreeNode;
+    typedef BaseDataFacade<EdgeData> super;
+    typedef StaticGraph<EdgeData, true> QueryGraph;
+    typedef typename StaticGraph<EdgeData, true>::NodeArrayEntry GraphNode;
+    typedef typename StaticGraph<EdgeData, true>::EdgeArrayEntry GraphEdge;
+    typedef typename RangeTable<16, true>::BlockT NameIndexBlock;
+    typedef typename QueryGraph::InputEdge InputEdge;
+    typedef typename super::RTreeLeaf RTreeLeaf;
+    using SharedRTree = StaticRTree<RTreeLeaf, ShM<FixedPointCoordinate, true>::vector, true>;
+    using TimeStampedRTreePair = std::pair<unsigned, std::shared_ptr<SharedRTree>>;
+    using RTreeNode = typename SharedRTree::TreeNode;
 
-    SharedDataLayout    * data_layout;
-    char                * shared_memory;
-    SharedDataTimestamp * data_timestamp_ptr;
+    SharedDataLayout *data_layout;
+    char *shared_memory;
+    SharedDataTimestamp *data_timestamp_ptr;
 
-    SharedDataType     CURRENT_LAYOUT;
-    SharedDataType     CURRENT_DATA;
-    unsigned           CURRENT_TIMESTAMP;
+    SharedDataType CURRENT_LAYOUT;
+    SharedDataType CURRENT_DATA;
+    unsigned CURRENT_TIMESTAMP;
 
-    unsigned                                m_check_sum;
-    unsigned                                m_number_of_nodes;
-    boost::shared_ptr<QueryGraph>           m_query_graph;
-    boost::shared_ptr<SharedMemory>         m_layout_memory;
-    boost::shared_ptr<SharedMemory>         m_large_memory;
-    std::string                             m_timestamp;
+    unsigned m_check_sum;
+    std::unique_ptr<QueryGraph> m_query_graph;
+    std::unique_ptr<SharedMemory> m_layout_memory;
+    std::unique_ptr<SharedMemory> m_large_memory;
+    std::string m_timestamp;
 
-    ShM<FixedPointCoordinate, true>::vector m_coordinate_list;
-    ShM<NodeID, true>::vector               m_via_node_list;
-    ShM<unsigned, true>::vector             m_name_ID_list;
-    ShM<TurnInstruction, true>::vector      m_turn_instruction_list;
-    ShM<char, true>::vector                 m_names_char_list;
-    ShM<unsigned, true>::vector             m_name_begin_indices;
-    boost::shared_ptr<StaticRTree<RTreeLeaf, true> > m_static_rtree;
+    std::shared_ptr<ShM<FixedPointCoordinate, true>::vector> m_coordinate_list;
+    ShM<NodeID, true>::vector m_via_node_list;
+    ShM<unsigned, true>::vector m_name_ID_list;
+    ShM<TurnInstruction, true>::vector m_turn_instruction_list;
+    ShM<TravelMode, true>::vector m_travel_mode_list;
+    ShM<char, true>::vector m_names_char_list;
+    ShM<unsigned, true>::vector m_name_begin_indices;
+    ShM<bool, true>::vector m_edge_is_compressed;
+    ShM<unsigned, true>::vector m_geometry_indices;
+    ShM<unsigned, true>::vector m_geometry_list;
 
-    // SharedDataFacade() { }
+    boost::thread_specific_ptr<std::pair<unsigned, std::shared_ptr<SharedRTree>>> m_static_rtree;
+    boost::filesystem::path file_index_path;
 
-    void LoadTimestamp() {
-        char * timestamp_ptr = shared_memory + data_layout->GetTimeStampOffset();
-        m_timestamp.resize(data_layout->timestamp_length);
-        std::copy(
-            timestamp_ptr,
-            timestamp_ptr+data_layout->timestamp_length,
-            m_timestamp.begin()
-        );
+    std::shared_ptr<RangeTable<16, true>> m_name_table;
+
+    void LoadChecksum()
+    {
+        m_check_sum =
+            *data_layout->GetBlockPtr<unsigned>(shared_memory, SharedDataLayout::HSGR_CHECKSUM);
+        SimpleLogger().Write() << "set checksum: " << m_check_sum;
     }
 
-    void LoadRTree(
-        const boost::filesystem::path & file_index_path
-    ) {
-        RTreeNode * tree_ptr = (RTreeNode *)(
-            shared_memory + data_layout->GetRSearchTreeOffset()
-        );
-        m_static_rtree = boost::make_shared<StaticRTree<RTreeLeaf, true> >(
-            tree_ptr,
-            data_layout->r_search_tree_size,
-            file_index_path
-        );
+    void LoadTimestamp()
+    {
+        char *timestamp_ptr =
+            data_layout->GetBlockPtr<char>(shared_memory, SharedDataLayout::TIMESTAMP);
+        m_timestamp.resize(data_layout->GetBlockSize(SharedDataLayout::TIMESTAMP));
+        std::copy(timestamp_ptr,
+                  timestamp_ptr + data_layout->GetBlockSize(SharedDataLayout::TIMESTAMP),
+                  m_timestamp.begin());
     }
 
-    void LoadGraph() {
-        m_number_of_nodes = data_layout->graph_node_list_size;
-        GraphNode * graph_nodes_ptr = (GraphNode *)(
-            shared_memory + data_layout->GetGraphNodeListOffset()
-        );
+    void LoadRTree()
+    {
+        BOOST_ASSERT_MSG(!m_coordinate_list->empty(), "coordinates must be loaded before r-tree");
 
-        GraphEdge * graph_edges_ptr = (GraphEdge *)(
-            shared_memory + data_layout->GetGraphEdgeListOffsett()
-        );
+        RTreeNode *tree_ptr =
+            data_layout->GetBlockPtr<RTreeNode>(shared_memory, SharedDataLayout::R_SEARCH_TREE);
+        m_static_rtree.reset(new TimeStampedRTreePair(CURRENT_TIMESTAMP,
+            osrm::make_unique<SharedRTree>(
+                tree_ptr,
+                data_layout->num_entries[SharedDataLayout::R_SEARCH_TREE],
+                file_index_path,
+                m_coordinate_list)));
+    }
+
+    void LoadGraph()
+    {
+        GraphNode *graph_nodes_ptr =
+            data_layout->GetBlockPtr<GraphNode>(shared_memory, SharedDataLayout::GRAPH_NODE_LIST);
+
+        GraphEdge *graph_edges_ptr =
+            data_layout->GetBlockPtr<GraphEdge>(shared_memory, SharedDataLayout::GRAPH_EDGE_LIST);
 
         typename ShM<GraphNode, true>::vector node_list(
-            graph_nodes_ptr,
-            data_layout->graph_node_list_size
-        );
+            graph_nodes_ptr, data_layout->num_entries[SharedDataLayout::GRAPH_NODE_LIST]);
         typename ShM<GraphEdge, true>::vector edge_list(
-            graph_edges_ptr,
-            data_layout->graph_edge_list_size
-        );
-        m_query_graph.reset(
-            new QueryGraph(node_list, edge_list)
-        );
-
+            graph_edges_ptr, data_layout->num_entries[SharedDataLayout::GRAPH_EDGE_LIST]);
+        m_query_graph.reset(new QueryGraph(node_list, edge_list));
     }
 
-    void LoadNodeAndEdgeInformation() {
+    void LoadNodeAndEdgeInformation()
+    {
 
-        FixedPointCoordinate * coordinate_list_ptr = (FixedPointCoordinate *)(
-            shared_memory + data_layout->GetCoordinateListOffset()
-        );
-        typename ShM<FixedPointCoordinate, true>::vector coordinate_list(
-                coordinate_list_ptr,
-                data_layout->coordinate_list_size
-        );
-        m_coordinate_list.swap( coordinate_list );
+        FixedPointCoordinate *coordinate_list_ptr = data_layout->GetBlockPtr<FixedPointCoordinate>(
+            shared_memory, SharedDataLayout::COORDINATE_LIST);
+        m_coordinate_list = osrm::make_unique<ShM<FixedPointCoordinate, true>::vector>(
+            coordinate_list_ptr, data_layout->num_entries[SharedDataLayout::COORDINATE_LIST]);
 
-        TurnInstruction * turn_instruction_list_ptr = (TurnInstruction *)(
-            shared_memory + data_layout->GetTurnInstructionListOffset()
-        );
+        TravelMode *travel_mode_list_ptr = data_layout->GetBlockPtr<TravelMode>(
+            shared_memory, SharedDataLayout::TRAVEL_MODE);
+        typename ShM<TravelMode, true>::vector travel_mode_list(
+            travel_mode_list_ptr,
+            data_layout->num_entries[SharedDataLayout::TRAVEL_MODE]);
+        m_travel_mode_list.swap(travel_mode_list);
+
+        TurnInstruction *turn_instruction_list_ptr = data_layout->GetBlockPtr<TurnInstruction>(
+            shared_memory, SharedDataLayout::TURN_INSTRUCTION);
         typename ShM<TurnInstruction, true>::vector turn_instruction_list(
             turn_instruction_list_ptr,
-            data_layout->turn_instruction_list_size
-        );
+            data_layout->num_entries[SharedDataLayout::TURN_INSTRUCTION]);
         m_turn_instruction_list.swap(turn_instruction_list);
 
-        unsigned * name_id_list_ptr = (unsigned *)(
-            shared_memory + data_layout->GetNameIDListOffset()
-        );
+        unsigned *name_id_list_ptr =
+            data_layout->GetBlockPtr<unsigned>(shared_memory, SharedDataLayout::NAME_ID_LIST);
         typename ShM<unsigned, true>::vector name_id_list(
-            name_id_list_ptr,
-            data_layout->name_id_list_size
-        );
+            name_id_list_ptr, data_layout->num_entries[SharedDataLayout::NAME_ID_LIST]);
         m_name_ID_list.swap(name_id_list);
     }
 
-    void LoadViaNodeList() {
-        NodeID * via_node_list_ptr = (NodeID *)(
-            shared_memory + data_layout->GetViaNodeListOffset()
-        );
+    void LoadViaNodeList()
+    {
+        NodeID *via_node_list_ptr =
+            data_layout->GetBlockPtr<NodeID>(shared_memory, SharedDataLayout::VIA_NODE_LIST);
         typename ShM<NodeID, true>::vector via_node_list(
-            via_node_list_ptr,
-            data_layout->via_node_list_size
-        );
+            via_node_list_ptr, data_layout->num_entries[SharedDataLayout::VIA_NODE_LIST]);
         m_via_node_list.swap(via_node_list);
     }
 
-    void LoadNames() {
-        unsigned * street_names_index_ptr = (unsigned *)(
-            shared_memory + data_layout->GetNameIndexOffset()
-        );
-        typename ShM<unsigned, true>::vector name_begin_indices(
-            street_names_index_ptr,
-            data_layout->name_index_list_size
-        );
-        m_name_begin_indices.swap(name_begin_indices);
+    void LoadNames()
+    {
+        unsigned *offsets_ptr =
+            data_layout->GetBlockPtr<unsigned>(shared_memory, SharedDataLayout::NAME_OFFSETS);
+        NameIndexBlock *blocks_ptr =
+            data_layout->GetBlockPtr<NameIndexBlock>(shared_memory, SharedDataLayout::NAME_BLOCKS);
+        typename ShM<unsigned, true>::vector name_offsets(
+            offsets_ptr, data_layout->num_entries[SharedDataLayout::NAME_OFFSETS]);
+        typename ShM<NameIndexBlock, true>::vector name_blocks(
+            blocks_ptr, data_layout->num_entries[SharedDataLayout::NAME_BLOCKS]);
 
-        char * names_list_ptr = (char *)(
-            shared_memory + data_layout->GetNameListOffset()
-        );
+        char *names_list_ptr =
+            data_layout->GetBlockPtr<char>(shared_memory, SharedDataLayout::NAME_CHAR_LIST);
         typename ShM<char, true>::vector names_char_list(
-            names_list_ptr,
-            data_layout->name_char_list_size
-        );
+            names_list_ptr, data_layout->num_entries[SharedDataLayout::NAME_CHAR_LIST]);
+        m_name_table = osrm::make_unique<RangeTable<16, true>>(
+            name_offsets, name_blocks, static_cast<unsigned>(names_char_list.size()));
+
         m_names_char_list.swap(names_char_list);
     }
 
-public:
-    SharedDataFacade( ) {
-        data_timestamp_ptr = (SharedDataTimestamp *)SharedMemoryFactory::Get(
-            CURRENT_REGIONS,
-            sizeof(SharedDataTimestamp),
-            false,
-            false
-        )->Ptr();
+    void LoadGeometries()
+    {
+        unsigned *geometries_compressed_ptr = data_layout->GetBlockPtr<unsigned>(
+            shared_memory, SharedDataLayout::GEOMETRIES_INDICATORS);
+        typename ShM<bool, true>::vector edge_is_compressed(
+            geometries_compressed_ptr,
+            data_layout->num_entries[SharedDataLayout::GEOMETRIES_INDICATORS]);
+        m_edge_is_compressed.swap(edge_is_compressed);
 
+        unsigned *geometries_index_ptr =
+            data_layout->GetBlockPtr<unsigned>(shared_memory, SharedDataLayout::GEOMETRIES_INDEX);
+        typename ShM<unsigned, true>::vector geometry_begin_indices(
+            geometries_index_ptr, data_layout->num_entries[SharedDataLayout::GEOMETRIES_INDEX]);
+        m_geometry_indices.swap(geometry_begin_indices);
+
+        unsigned *geometries_list_ptr =
+            data_layout->GetBlockPtr<unsigned>(shared_memory, SharedDataLayout::GEOMETRIES_LIST);
+        typename ShM<unsigned, true>::vector geometry_list(
+            geometries_list_ptr, data_layout->num_entries[SharedDataLayout::GEOMETRIES_LIST]);
+        m_geometry_list.swap(geometry_list);
+    }
+
+  public:
+    virtual ~SharedDataFacade() {}
+
+    SharedDataFacade()
+    {
+        data_timestamp_ptr = (SharedDataTimestamp *)SharedMemoryFactory::Get(
+                                 CURRENT_REGIONS, sizeof(SharedDataTimestamp), false, false)->Ptr();
         CURRENT_LAYOUT = LAYOUT_NONE;
         CURRENT_DATA = DATA_NONE;
         CURRENT_TIMESTAMP = 0;
 
-        //load data
+        // load data
         CheckAndReloadFacade();
     }
 
-    void CheckAndReloadFacade() {
-        if(
-            CURRENT_LAYOUT    != data_timestamp_ptr->layout    ||
-            CURRENT_DATA      != data_timestamp_ptr->data      ||
-            CURRENT_TIMESTAMP != data_timestamp_ptr->timestamp
-        ) {
+    void CheckAndReloadFacade()
+    {
+        if (CURRENT_LAYOUT != data_timestamp_ptr->layout ||
+            CURRENT_DATA != data_timestamp_ptr->data ||
+            CURRENT_TIMESTAMP != data_timestamp_ptr->timestamp)
+        {
             // release the previous shared memory segments
             SharedMemory::Remove(CURRENT_LAYOUT);
             SharedMemory::Remove(CURRENT_DATA);
 
-            CURRENT_LAYOUT    = data_timestamp_ptr->layout;
-            CURRENT_DATA      = data_timestamp_ptr->data;
+            CURRENT_LAYOUT = data_timestamp_ptr->layout;
+            CURRENT_DATA = data_timestamp_ptr->data;
             CURRENT_TIMESTAMP = data_timestamp_ptr->timestamp;
 
-            m_layout_memory.reset( SharedMemoryFactory::Get(CURRENT_LAYOUT) );
+            m_layout_memory.reset(SharedMemoryFactory::Get(CURRENT_LAYOUT));
 
-            data_layout = (SharedDataLayout *)(
-                m_layout_memory->Ptr()
-            );
-            boost::filesystem::path ram_index_path(data_layout->ram_index_file_name);
-            if( !boost::filesystem::exists(ram_index_path) ) {
-                throw OSRMException(
-                    "no leaf index file given. "
-                    "Is any data loaded into shared memory?"
-                );
+            data_layout = (SharedDataLayout *)(m_layout_memory->Ptr());
+
+            m_large_memory.reset(SharedMemoryFactory::Get(CURRENT_DATA));
+            shared_memory = (char *)(m_large_memory->Ptr());
+
+            const char *file_index_ptr =
+                data_layout->GetBlockPtr<char>(shared_memory, SharedDataLayout::FILE_INDEX_PATH);
+            file_index_path = boost::filesystem::path(file_index_ptr);
+            if (!boost::filesystem::exists(file_index_path))
+            {
+                SimpleLogger().Write(logDEBUG) << "Leaf file name " << file_index_path.string();
+                throw osrm::exception("Could not load leaf index file."
+                                    "Is any data loaded into shared memory?");
             }
 
-            m_large_memory.reset( SharedMemoryFactory::Get(CURRENT_DATA) );
-            shared_memory = (char *)(
-                m_large_memory->Ptr()
-            );
-
             LoadGraph();
+            LoadChecksum();
             LoadNodeAndEdgeInformation();
-            LoadRTree(ram_index_path);
+            LoadGeometries();
             LoadTimestamp();
             LoadViaNodeList();
             LoadNames();
 
             data_layout->PrintInformation();
+
+            SimpleLogger().Write() << "number of geometries: " << m_coordinate_list->size();
+            for (unsigned i = 0; i < m_coordinate_list->size(); ++i)
+            {
+                if (!GetCoordinateOfNode(i).is_valid())
+                {
+                    SimpleLogger().Write() << "coordinate " << i << " not valid";
+                }
+            }
         }
     }
 
+    // search graph access
+    unsigned GetNumberOfNodes() const final { return m_query_graph->GetNumberOfNodes(); }
 
-    //search graph access
-    unsigned GetNumberOfNodes() const {
-        return m_query_graph->GetNumberOfNodes();
-    }
+    unsigned GetNumberOfEdges() const final { return m_query_graph->GetNumberOfEdges(); }
 
-    unsigned GetNumberOfEdges() const {
-        return m_query_graph->GetNumberOfEdges();
-    }
+    unsigned GetOutDegree(const NodeID n) const final { return m_query_graph->GetOutDegree(n); }
 
-    unsigned GetOutDegree( const NodeID n ) const {
-        return m_query_graph->GetOutDegree(n);
-    }
+    NodeID GetTarget(const EdgeID e) const final { return m_query_graph->GetTarget(e); }
 
-    NodeID GetTarget( const EdgeID e ) const {
-        return m_query_graph->GetTarget(e); }
+    EdgeDataT &GetEdgeData(const EdgeID e) const final { return m_query_graph->GetEdgeData(e); }
 
-    EdgeDataT &GetEdgeData( const EdgeID e ) {
-        return m_query_graph->GetEdgeData(e);
-    }
+    EdgeID BeginEdges(const NodeID n) const final { return m_query_graph->BeginEdges(n); }
 
-    // const EdgeDataT &GetEdgeData( const EdgeID e ) const {
-    //     return m_query_graph->GetEdgeData(e);
-    // }
+    EdgeID EndEdges(const NodeID n) const final { return m_query_graph->EndEdges(n); }
 
-    EdgeID BeginEdges( const NodeID n ) const {
-        return m_query_graph->BeginEdges(n);
-    }
+    EdgeRange GetAdjacentEdgeRange(const NodeID node) const final
+    {
+        return m_query_graph->GetAdjacentEdgeRange(node);
+    };
 
-    EdgeID EndEdges( const NodeID n ) const {
-        return m_query_graph->EndEdges(n);
-    }
-
-    //searches for a specific edge
-    EdgeID FindEdge( const NodeID from, const NodeID to ) const {
+    // searches for a specific edge
+    EdgeID FindEdge(const NodeID from, const NodeID to) const final
+    {
         return m_query_graph->FindEdge(from, to);
     }
 
-    EdgeID FindEdgeInEitherDirection(
-        const NodeID from,
-        const NodeID to
-    ) const {
+    EdgeID FindEdgeInEitherDirection(const NodeID from, const NodeID to) const final
+    {
         return m_query_graph->FindEdgeInEitherDirection(from, to);
     }
 
-    EdgeID FindEdgeIndicateIfReverse(
-        const NodeID from,
-        const NodeID to,
-        bool & result
-    ) const {
+    EdgeID FindEdgeIndicateIfReverse(const NodeID from, const NodeID to, bool &result) const final
+    {
         return m_query_graph->FindEdgeIndicateIfReverse(from, to, result);
     }
 
-    //node and edge information access
-    FixedPointCoordinate GetCoordinateOfNode(
-        const unsigned id
-    ) const {
-        const NodeID node = m_via_node_list.at(id);
-        return m_coordinate_list.at(node);
+    // node and edge information access
+    FixedPointCoordinate GetCoordinateOfNode(const NodeID id) const final
+    {
+        return m_coordinate_list->at(id);
     };
 
-    TurnInstruction GetTurnInstructionForEdgeID(
-        const unsigned id
-    ) const {
+    virtual bool EdgeIsCompressed(const unsigned id) const final
+    {
+        return m_edge_is_compressed.at(id);
+    }
+
+    virtual void GetUncompressedGeometry(const unsigned id,
+                                         std::vector<unsigned> &result_nodes) const final
+    {
+        const unsigned begin = m_geometry_indices.at(id);
+        const unsigned end = m_geometry_indices.at(id + 1);
+
+        result_nodes.clear();
+        result_nodes.insert(
+            result_nodes.begin(), m_geometry_list.begin() + begin, m_geometry_list.begin() + end);
+    }
+
+    virtual unsigned GetGeometryIndexForEdgeID(const unsigned id) const final
+    {
+        return m_via_node_list.at(id);
+    }
+
+    TurnInstruction GetTurnInstructionForEdgeID(const unsigned id) const final
+    {
         return m_turn_instruction_list.at(id);
     }
 
-    bool LocateClosestEndPointForCoordinate(
-        const FixedPointCoordinate& input_coordinate,
-        FixedPointCoordinate& result,
-        const unsigned zoom_level = 18
-    ) const {
-        return  m_static_rtree->LocateClosestEndPointForCoordinate(
-                    input_coordinate,
-                    result,
-                    zoom_level
-                );
+    TravelMode GetTravelModeForEdgeID(const unsigned id) const
+    {
+        return m_travel_mode_list.at(id);
     }
 
-    bool FindPhantomNodeForCoordinate(
-        const FixedPointCoordinate & input_coordinate,
-        PhantomNode & resulting_phantom_node,
-        const unsigned zoom_level
-    ) const {
-        return  m_static_rtree->FindPhantomNodeForCoordinate(
-                    input_coordinate,
-                    resulting_phantom_node,
-                    zoom_level
-                );
+    bool LocateClosestEndPointForCoordinate(const FixedPointCoordinate &input_coordinate,
+                                            FixedPointCoordinate &result,
+                                            const unsigned zoom_level = 18) final
+    {
+        if (!m_static_rtree.get() || CURRENT_TIMESTAMP != m_static_rtree->first)
+        {
+            LoadRTree();
+        }
+
+        return m_static_rtree->second->LocateClosestEndPointForCoordinate(
+            input_coordinate, result, zoom_level);
     }
 
-    unsigned GetCheckSum() const { return m_check_sum; }
+    bool
+    IncrementalFindPhantomNodeForCoordinate(const FixedPointCoordinate &input_coordinate,
+                                            PhantomNode &resulting_phantom_node) final
+    {
+        std::vector<PhantomNode> resulting_phantom_node_vector;
+        auto result = IncrementalFindPhantomNodeForCoordinate(input_coordinate,
+                                                              resulting_phantom_node_vector,
+                                                              1);
+        if (result)
+        {
+            BOOST_ASSERT(!resulting_phantom_node_vector.empty());
+            resulting_phantom_node = resulting_phantom_node_vector.front();
+        }
+        return result;
+    }
 
-    unsigned GetNameIndexFromEdgeID(const unsigned id) const {
+    bool
+    IncrementalFindPhantomNodeForCoordinate(const FixedPointCoordinate &input_coordinate,
+                                            std::vector<PhantomNode> &resulting_phantom_node_vector,
+                                            const unsigned number_of_results) final
+    {
+        if (!m_static_rtree.get() || CURRENT_TIMESTAMP != m_static_rtree->first)
+        {
+            LoadRTree();
+        }
+
+        return m_static_rtree->second->IncrementalFindPhantomNodeForCoordinate(
+            input_coordinate, resulting_phantom_node_vector, number_of_results);
+    }
+
+    unsigned GetCheckSum() const final { return m_check_sum; }
+
+    unsigned GetNameIndexFromEdgeID(const unsigned id) const final
+    {
         return m_name_ID_list.at(id);
     };
 
-    void GetName( const unsigned name_id, std::string & result ) const {
-        if(UINT_MAX == name_id) {
+    void GetName(const unsigned name_id, std::string &result) const final
+    {
+        if (UINT_MAX == name_id)
+        {
             result = "";
             return;
         }
-        BOOST_ASSERT_MSG(
-            name_id < m_name_begin_indices.size(),
-            "name id too high"
-        );
-        unsigned begin_index = m_name_begin_indices[name_id];
-        unsigned end_index = m_name_begin_indices[name_id+1];
-        BOOST_ASSERT_MSG(
-            begin_index < m_names_char_list.size(),
-            "begin index of name too high"
-        );
-        BOOST_ASSERT_MSG(
-            end_index < m_names_char_list.size(),
-            "end index of name too high"
-        );
+        auto range = m_name_table->GetRange(name_id);
 
-        BOOST_ASSERT_MSG(begin_index <= end_index, "string ends before begin");
         result.clear();
-        result.resize(end_index - begin_index);
-        std::copy(
-            m_names_char_list.begin() + begin_index,
-            m_names_char_list.begin() + end_index,
-            result.begin()
-        );
+        if (range.begin() != range.end())
+        {
+            result.resize(range.back() - range.front() + 1);
+            std::copy(m_names_char_list.begin() + range.front(),
+                      m_names_char_list.begin() + range.back() + 1,
+                      result.begin());
+        }
     }
 
-    std::string GetTimestamp() const {
-        return m_timestamp;
-    }
+    std::string GetTimestamp() const final { return m_timestamp; }
 };
 
-#endif  // SHARED_DATA_FACADE_H
+#endif // SHARED_DATA_FACADE_H

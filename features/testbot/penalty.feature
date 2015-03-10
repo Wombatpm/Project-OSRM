@@ -1,6 +1,6 @@
-@routing @penalty @signal
+@routing @penalty @signal @testbot
 Feature: Penalties
-Testbot uses a signal penalty of 7s.
+# Testbot uses a signal penalty of 7s.
 
     Background:
         Given the profile "testbot"

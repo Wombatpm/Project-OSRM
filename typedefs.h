@@ -25,40 +25,26 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 */
 
-#ifndef TYPEDEFS_H_
-#define TYPEDEFS_H_
+#ifndef TYPEDEFS_H
+#define TYPEDEFS_H
 
-#include <climits>
-#include <cstdlib>
-
-// To fix long and long long woes
-#include <boost/integer.hpp>
-#include <boost/integer_traits.hpp>
-
-#ifdef __APPLE__
-#include <signal.h>
-#endif
-
-#include <iostream>
-#include <ostream>
+#include <limits>
 
 // Necessary workaround for Windows as VS doesn't implement C99
 #ifdef _MSC_VER
+#define WIN32_LEAN_AND_MEAN
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
-template<typename digitT>
-digitT round(digitT x) {
-    return std::floor(x + 0.5);
-}
 #endif
 
-typedef unsigned int NodeID;
-typedef unsigned int EdgeID;
-typedef unsigned int EdgeWeight;
+using NodeID = unsigned int;
+using EdgeID = unsigned int;
+using EdgeWeight = int;
 
-static const NodeID SPECIAL_NODEID = boost::integer_traits<uint32_t>::const_max;
-static const EdgeID SPECIAL_EDGEID = boost::integer_traits<uint32_t>::const_max;
+static const NodeID SPECIAL_NODEID = std::numeric_limits<unsigned>::max();
+static const EdgeID SPECIAL_EDGEID = std::numeric_limits<unsigned>::max();
+static const unsigned INVALID_NAMEID = std::numeric_limits<unsigned>::max();
+static const EdgeWeight INVALID_EDGE_WEIGHT = std::numeric_limits<int>::max();
 
-#endif /* TYPEDEFS_H_ */
+#endif /* TYPEDEFS_H */

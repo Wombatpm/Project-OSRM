@@ -1,6 +1,6 @@
 /*
 
-Copyright (c) 2013, Project OSRM, Dennis Luxen, others
+Copyright (c) 2015, Project OSRM, Dennis Luxen, others
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,
@@ -26,104 +26,89 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 #include "Library/OSRM.h"
-
-#include "Server/ServerFactory.h"
-
-#include "Util/GitDescription.h"
-#include "Util/InputFileUtil.h"
-#include "Util/OpenMPWrapper.h"
+#include "Server/Server.h"
+#include "Util/git_sha.hpp"
 #include "Util/ProgramOptions.h"
-#include "Util/SimpleLogger.h"
-#include "Util/UUID.h"
+#include "Util/simple_logger.hpp"
 
 #ifdef __linux__
-#include "Util/LinuxStackTrace.h"
 #include <sys/mman.h>
 #endif
 
+#include <cstdlib>
+
 #include <signal.h>
 
-#include <boost/bind.hpp>
-#include <boost/date_time.hpp>
-#include <boost/thread.hpp>
-
+#include <chrono>
+#include <future>
 #include <iostream>
+#include <thread>
 
 #ifdef _WIN32
 boost::function0<void> console_ctrl_function;
 
 BOOL WINAPI console_ctrl_handler(DWORD ctrl_type)
 {
-  switch (ctrl_type)
-  {
-  case CTRL_C_EVENT:
-  case CTRL_BREAK_EVENT:
-  case CTRL_CLOSE_EVENT:
-  case CTRL_SHUTDOWN_EVENT:
-    console_ctrl_function();
-    return TRUE;
-  default:
-    return FALSE;
-  }
+    switch (ctrl_type)
+    {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        console_ctrl_function();
+        return TRUE;
+    default:
+        return FALSE;
+    }
 }
 #endif
 
-int main (int argc, const char * argv[]) {
-    try {
+int main(int argc, const char *argv[])
+{
+    try
+    {
         LogPolicy::GetInstance().Unmute();
-#ifdef __linux__
-        if( -1 == mlockall(MCL_CURRENT | MCL_FUTURE) ) {
-            SimpleLogger().Write(logWARNING) <<
-                "Process " << argv[0] << " could not be locked to RAM";
-        }
-        installCrashHandler(argv[0]);
-#endif
-        bool use_shared_memory = false;
+
+        bool use_shared_memory = false, trial_run = false;
         std::string ip_address;
-        int ip_port, requested_num_threads;
+        int ip_port, requested_thread_num;
 
         ServerPaths server_paths;
-        if( !GenerateServerProgramOptions(
-                argc,
-                argv,
-                server_paths,
-                ip_address,
-                ip_port,
-                requested_num_threads,
-                use_shared_memory
-             )
-        ) {
+
+        const unsigned init_result = GenerateServerProgramOptions(argc,
+                                                                  argv,
+                                                                  server_paths,
+                                                                  ip_address,
+                                                                  ip_port,
+                                                                  requested_thread_num,
+                                                                  use_shared_memory,
+                                                                  trial_run);
+        if (init_result == INIT_OK_DO_NOT_START_ENGINE)
+        {
             return 0;
         }
-
-        SimpleLogger().Write() <<
-            "starting up engines, " << g_GIT_DESCRIPTION << ", " <<
-            "compiled at " << __DATE__ << ", " __TIME__;
-
-        if( use_shared_memory ) {
-            SimpleLogger().Write(logDEBUG) << "Loading from shared memory";
-        } else {
-            SimpleLogger().Write() <<
-                "HSGR file:\t" << server_paths["hsgrdata"];
-            SimpleLogger().Write(logDEBUG) <<
-                "Nodes file:\t" << server_paths["nodesdata"];
-            SimpleLogger().Write(logDEBUG) <<
-                "Edges file:\t" << server_paths["edgesdata"];
-            SimpleLogger().Write(logDEBUG) <<
-                "RAM file:\t" << server_paths["ramindex"];
-            SimpleLogger().Write(logDEBUG) <<
-                "Index file:\t" << server_paths["fileindex"];
-            SimpleLogger().Write(logDEBUG) <<
-                "Names file:\t" << server_paths["namesdata"];
-            SimpleLogger().Write(logDEBUG) <<
-                "Timestamp file:\t" << server_paths["timestamp"];
-            SimpleLogger().Write(logDEBUG) <<
-                "Threads:\t" << requested_num_threads;
-            SimpleLogger().Write(logDEBUG) <<
-                "IP address:\t" << ip_address;
-            SimpleLogger().Write(logDEBUG) <<
-                "IP port:\t" << ip_port;
+        if (init_result == INIT_FAILED)
+        {
+            return 1;
         }
+
+#ifdef __linux__
+        const int lock_flags = MCL_CURRENT | MCL_FUTURE;
+        if (-1 == mlockall(lock_flags))
+        {
+            SimpleLogger().Write(logWARNING) << argv[0] << " could not be locked to RAM";
+        }
+#endif
+        SimpleLogger().Write() << "starting up engines, " << g_GIT_DESCRIPTION;
+
+        if (use_shared_memory)
+        {
+            SimpleLogger().Write(logDEBUG) << "Loading from shared memory";
+        }
+
+        SimpleLogger().Write(logDEBUG) << "Threads:\t" << requested_thread_num;
+        SimpleLogger().Write(logDEBUG) << "IP address:\t" << ip_address;
+        SimpleLogger().Write(logDEBUG) << "IP port:\t" << ip_port;
 #ifndef _WIN32
         int sig = 0;
         sigset_t new_mask;
@@ -132,48 +117,64 @@ int main (int argc, const char * argv[]) {
         pthread_sigmask(SIG_BLOCK, &new_mask, &old_mask);
 #endif
 
-        OSRM routing_machine(server_paths, use_shared_memory);
-        Server * s = ServerFactory::CreateServer(
-                        ip_address,
-                        ip_port,
-                        requested_num_threads
-                     );
+        OSRM osrm_lib(server_paths, use_shared_memory);
+        auto routing_server =
+            Server::CreateServer(ip_address, ip_port, requested_thread_num);
 
-        s->GetRequestHandlerPtr().RegisterRoutingMachine(&routing_machine);
+        routing_server->GetRequestHandlerPtr().RegisterRoutingMachine(&osrm_lib);
 
-        boost::thread t(boost::bind(&Server::Run, s));
+        if (trial_run)
+        {
+            SimpleLogger().Write() << "trial run, quitting after successful initialization";
+        }
+        else
+        {
+            std::packaged_task<int()> server_task([&]()->int{ routing_server->Run(); return 0; });
+            auto future = server_task.get_future();
+            std::thread server_thread(std::move(server_task));
 
 #ifndef _WIN32
-        sigset_t wait_mask;
-        pthread_sigmask(SIG_SETMASK, &old_mask, 0);
-        sigemptyset(&wait_mask);
-        sigaddset(&wait_mask, SIGINT);
-        sigaddset(&wait_mask, SIGQUIT);
-        sigaddset(&wait_mask, SIGTERM);
-        pthread_sigmask(SIG_BLOCK, &wait_mask, 0);
-        std::cout << "[server] running and waiting for requests" << std::endl;
-        sigwait(&wait_mask, &sig);
+            sigset_t wait_mask;
+            pthread_sigmask(SIG_SETMASK, &old_mask, 0);
+            sigemptyset(&wait_mask);
+            sigaddset(&wait_mask, SIGINT);
+            sigaddset(&wait_mask, SIGQUIT);
+            sigaddset(&wait_mask, SIGTERM);
+            pthread_sigmask(SIG_BLOCK, &wait_mask, 0);
+            SimpleLogger().Write() << "running and waiting for requests";
+            sigwait(&wait_mask, &sig);
 #else
-        // Set console control handler to allow server to be stopped.
-        console_ctrl_function = boost::bind(&Server::Stop, s);
-        SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
-        std::cout << "[server] running and waiting for requests" << std::endl;
-        s->Run();
+            // Set console control handler to allow server to be stopped.
+            console_ctrl_function = std::bind(&Server::Stop, routing_server);
+            SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+            SimpleLogger().Write() << "running and waiting for requests";
+            routing_server->Run();
 #endif
-        std::cout << "[server] initiating shutdown" << std::endl;
-        s->Stop();
-        std::cout << "[server] stopping threads" << std::endl;
+            SimpleLogger().Write() << "initiating shutdown";
+            routing_server->Stop();
+            SimpleLogger().Write() << "stopping threads";
 
-        if(!t.timed_join(boost::posix_time::seconds(2))) {
-       	    SimpleLogger().Write(logDEBUG) <<
-                "Threads did not finish within 2 seconds. Hard abort!";
+            auto status = future.wait_for(std::chrono::seconds(2));
+
+            if (status == std::future_status::ready)
+            {
+               server_thread.join();
+            }
+            else
+            {
+                SimpleLogger().Write(logWARNING) << "Didn't exit within 2 seconds. Hard abort!";
+                server_task.reset(); // just kill it
+            }
         }
 
-        std::cout << "[server] freeing objects" << std::endl;
-        delete s;
-        std::cout << "[server] shutdown completed" << std::endl;
-    } catch (std::exception& e) {
-        std::cerr << "[fatal error] exception: " << e.what() << std::endl;
+        SimpleLogger().Write() << "freeing objects";
+        routing_server.reset();
+        SimpleLogger().Write() << "shutdown completed";
+    }
+    catch (const std::exception &e)
+    {
+        SimpleLogger().Write(logWARNING) << "exception: " << e.what();
+        return 1;
     }
 #ifdef __linux__
     munlockall();

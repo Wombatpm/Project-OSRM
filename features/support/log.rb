@@ -1,3 +1,19 @@
+# logging
+
+PREPROCESS_LOG_FILE = 'preprocessing.log'
+LOG_FILE = 'fail.log'
+
+
+def clear_log_files
+  Dir.chdir TEST_FOLDER do
+    # emptying existing files, rather than deleting and writing new ones makes it 
+    # easier to use tail -f from the command line
+    `echo '' > #{OSRM_ROUTED_LOG_FILE}`
+    `echo '' > #{PREPROCESS_LOG_FILE}`
+    `echo '' > #{LOG_FILE}`
+  end
+end
+
 def log s='', type=nil
   if type == :preprocess
     file = PREPROCESS_LOG_FILE
@@ -13,7 +29,10 @@ def log_scenario_fail_info
   log "========================================="
   log "Failed scenario: #{@scenario_title}"
   log "Time: #{@scenario_time}"
-  log "Fingerprint: #{@fingerprint}"
+  log "Fingerprint osm stage: #{@fingerprint_osm}"
+  log "Fingerprint extract stage: #{@fingerprint_extract}"
+  log "Fingerprint prepare stage: #{@fingerprint_prepare}"
+  log "Fingerprint route stage: #{@fingerprint_route}"
   log "Profile: #{@profile}"
   log
   log '```xml' #so output can be posted directly to github comment fields
@@ -24,17 +43,21 @@ def log_scenario_fail_info
   @has_logged_scenario_info = true
 end
 
-def log_fail expected,actual,failed
+def log_fail expected,got,attempts
+  return
   log_scenario_fail_info
   log "== "
   log "Expected: #{expected}"
-  log "Got:      #{actual}"
+  log "Got:      #{got}"
   log
-  failed.each do |fail|
-    log "Attempt: #{fail[:attempt]}"
-    log "Query: #{fail[:query]}"
-    log "Response: #{fail[:response].body}"
-    log
+  ['route','forw','backw'].each do |direction|
+    if attempts[direction]
+      attempts[direction]
+      log "Direction: #{direction}"
+      log "Query: #{attempts[direction][:query]}"
+      log "Response: #{attempts[direction][:response].body}"
+      log
+    end
   end
 end
 
